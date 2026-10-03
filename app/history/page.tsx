@@ -13,6 +13,7 @@ export default function HistoryPage() {
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | "boarded">("all");
 
   const fetchHistory = useCallback((userName: string, userRole: string) => {
     const url =
@@ -115,6 +116,44 @@ export default function HistoryPage() {
           </div>
         )}
 
+        {/* Filter controls for student/employee */}
+        {!isRider && !loading && rides.length > 0 && (
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setFilter("all")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                filter === "all"
+                  ? "bg-blue-600 text-white shadow-xs"
+                  : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              All Named Trips ({rides.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilter("boarded")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                filter === "boarded"
+                  ? "bg-emerald-600 text-white shadow-xs"
+                  : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              Boarded Only (
+              {
+                rides.filter((r) =>
+                  r.passengers.some(
+                    (p) =>
+                      p.name.toLowerCase() === currentUser?.name?.toLowerCase() &&
+                      p.pickupStatus === "boarded"
+                  )
+                ).length
+              }
+              )
+            </button>
+          </div>
+        )}
+
         {/* Loading state */}
         {loading ? (
           <div className="bg-white p-12 rounded-xl border border-gray-200 text-center text-sm text-gray-500">
@@ -137,11 +176,19 @@ export default function HistoryPage() {
         ) : (
           /* List of History Cards */
           <div className="space-y-4">
-            {rides.map((ride) => {
-              // For student / employee: find their individual pickup status
-              const myPassenger = ride.passengers.find(
-                (p) => p.name.toLowerCase() === currentUser?.name?.toLowerCase()
-              );
+            {rides
+              .filter((ride) => {
+                if (isRider || filter === "all") return true;
+                const myPassenger = ride.passengers.find(
+                  (p) => p.name.toLowerCase() === currentUser?.name?.toLowerCase()
+                );
+                return myPassenger?.pickupStatus === "boarded";
+              })
+              .map((ride) => {
+                // For student / employee: find their individual pickup status
+                const myPassenger = ride.passengers.find(
+                  (p) => p.name.toLowerCase() === currentUser?.name?.toLowerCase()
+                );
 
               return (
                 <div

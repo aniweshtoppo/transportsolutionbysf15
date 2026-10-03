@@ -5,26 +5,63 @@ import fs from "fs";
 import path from "path";
 
 // Local JSON fallback store when MONGODB_URI is not provided
-const FALLBACK_DIR = path.join(process.cwd(), "data");
+declare global {
+  var _fallbackRidesCache: Ride[] | undefined;
+}
+
+const FALLBACK_DIR = process.env.VERCEL
+  ? path.join("/tmp", "mobility_desk_data")
+  : path.join(process.cwd(), "data");
 const FALLBACK_FILE = path.join(FALLBACK_DIR, "rides.json");
 
+export function normalizeScheduledAt(val: string): string {
+  try {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) {
+      return d.toISOString().slice(0, 16); // YYYY-MM-DDTHH:mm
+    }
+  } catch {
+    // fallback
+  }
+  return (val || "").trim().slice(0, 16);
+}
+
 function readFallbackRides(): Ride[] {
+  if (global._fallbackRidesCache && Array.isArray(global._fallbackRidesCache)) {
+    return global._fallbackRidesCache;
+  }
   try {
     if (!fs.existsSync(FALLBACK_DIR)) {
       fs.mkdirSync(FALLBACK_DIR, { recursive: true });
     }
     if (!fs.existsSync(FALLBACK_FILE)) {
+      const seedFile = path.join(process.cwd(), "data", "rides.json");
+      if (fs.existsSync(seedFile)) {
+        try {
+          const seedData = fs.readFileSync(seedFile, "utf-8");
+          const parsed = JSON.parse(seedData) as Ride[];
+          global._fallbackRidesCache = parsed;
+          fs.writeFileSync(FALLBACK_FILE, seedData, "utf-8");
+          return parsed;
+        } catch {
+          // ignore
+        }
+      }
       fs.writeFileSync(FALLBACK_FILE, JSON.stringify([]), "utf-8");
+      global._fallbackRidesCache = [];
       return [];
     }
     const data = fs.readFileSync(FALLBACK_FILE, "utf-8");
-    return JSON.parse(data) as Ride[];
+    const parsed = JSON.parse(data) as Ride[];
+    global._fallbackRidesCache = parsed;
+    return parsed;
   } catch {
-    return [];
+    return global._fallbackRidesCache || [];
   }
 }
 
 function writeFallbackRides(rides: Ride[]): void {
+  global._fallbackRidesCache = rides;
   try {
     if (!fs.existsSync(FALLBACK_DIR)) {
       fs.mkdirSync(FALLBACK_DIR, { recursive: true });
@@ -157,14 +194,22 @@ export async function acceptRide(
     );
 
     // Clash logic: Set all other pending rides with the exact same scheduledAt to 'clash'
-    await db.collection("rides").updateMany(
-      {
-        _id: { $ne: new ObjectId(rideId) },
-        scheduledAt: target.scheduledAt,
-        status: "pending",
-      },
-      { $set: { status: "clash" } }
-    );
+    const targetNorm = normalizeScheduledAt(target.scheduledAt);
+    const otherPending = await db.collection("rides").find({
+      _id: { $ne: new ObjectId(rideId) },
+      status: "pending",
+    }).toArray();
+
+    const clashingIds = otherPending
+      .filter((r) => r.scheduledAt === target.scheduledAt || normalizeScheduledAt(r.scheduledAt) === targetNorm)
+      .map((r) => r._id);
+
+    if (clashingIds.length > 0) {
+      await db.collection("rides").updateMany(
+        { _id: { $in: clashingIds } },
+        { $set: { status: "clash" } }
+      );
+    }
 
     const updated = await getRideById(rideId);
     return { success: true, ride: updated || undefined };
@@ -191,8 +236,13 @@ export async function acceptRide(
     target.status = "accepted";
 
     // Mark other pending requests with same scheduledAt as clash
+    const targetNorm = normalizeScheduledAt(target.scheduledAt);
     for (const r of rides) {
-      if (r._id !== rideId && r.scheduledAt === target.scheduledAt && r.status === "pending") {
+      if (
+        r._id !== rideId &&
+        r.status === "pending" &&
+        (r.scheduledAt === target.scheduledAt || normalizeScheduledAt(r.scheduledAt) === targetNorm)
+      ) {
         r.status = "clash";
       }
     }
